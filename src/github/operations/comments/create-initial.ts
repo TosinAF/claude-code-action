@@ -37,21 +37,30 @@ export async function createInitialComment(
     let response;
 
     if (useStickyComment && botName && context.isPR && isPullRequestEvent(context)) {
-      const comments = await octokit.rest.issues.listComments({
+      // Use pagination to fetch ALL comments (default is only 30 per page)
+      const allComments = await octokit.paginate(octokit.rest.issues.listComments, {
         owner,
         repo,
         issue_number: context.entityNumber,
+        per_page: 100,
       });
 
       // Find existing comment that matches this bot's sticky header
       const stickyHeader = createStickyCommentHeader(botName);
-      const existingComment = comments.data.find((comment) => {
+      console.log(`🔍 Searching for sticky header: "${stickyHeader}" among ${allComments.length} comments`);
+
+      const existingComment = allComments.find((comment) => {
         // Only match comments with OUR bot's sticky header
         // This ensures each bot gets its own isolated comment
-        return comment.body?.includes(stickyHeader);
+        const hasHeader = comment.body?.includes(stickyHeader);
+        if (hasHeader) {
+          console.log(`✅ Found matching comment ID: ${comment.id}`);
+        }
+        return hasHeader;
       });
 
       if (existingComment) {
+        console.log(`📝 Updating existing comment ID: ${existingComment.id}`);
         response = await octokit.rest.issues.updateComment({
           owner,
           repo,
@@ -59,6 +68,7 @@ export async function createInitialComment(
           body: initialBody,
         });
       } else {
+        console.log(`📝 No existing comment found, creating new one`);
         // Create new comment if no existing one found for this bot
         response = await octokit.rest.issues.createComment({
           owner,
