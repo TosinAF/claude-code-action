@@ -443,4 +443,87 @@ describe("updateCommentBody", () => {
       expect(result).not.toContain("tree/claude/issue-123");
     });
   });
+
+  describe("sticky header preservation", () => {
+    it("preserves sticky header when updating comment", () => {
+      const input = {
+        ...baseInput,
+        currentBody:
+          "<!-- bot: claude-docs-review -->\nClaude Code is working…",
+        triggerUsername: "testuser",
+      };
+
+      const result = updateCommentBody(input);
+      expect(result).toContain("<!-- bot: claude-docs-review -->");
+      expect(result).toContain("**Claude finished @testuser's task**");
+    });
+
+    it("preserves sticky header with different bot names", () => {
+      const input = {
+        ...baseInput,
+        currentBody:
+          "<!-- bot: claude-security-review -->\nClaude Code is working…\n\nI'll analyze this.",
+        triggerUsername: "testuser",
+      };
+
+      const result = updateCommentBody(input);
+      expect(result).toContain("<!-- bot: claude-security-review -->");
+      expect(result).toContain("**Claude finished @testuser's task**");
+    });
+
+    it("sticky header appears at the start of the final comment", () => {
+      const input = {
+        ...baseInput,
+        currentBody:
+          "<!-- bot: my-bot -->\nClaude Code is working…",
+        triggerUsername: "testuser",
+      };
+
+      const result = updateCommentBody(input);
+      expect(result.startsWith("<!-- bot: my-bot -->")).toBe(true);
+    });
+
+    it("does not add sticky header if none existed", () => {
+      const input = {
+        ...baseInput,
+        currentBody: "Claude Code is working…",
+        triggerUsername: "testuser",
+      };
+
+      const result = updateCommentBody(input);
+      expect(result).not.toContain("<!-- bot:");
+      expect(result).toContain("**Claude finished @testuser's task**");
+    });
+
+    it("preserves sticky header on error", () => {
+      const input = {
+        ...baseInput,
+        currentBody:
+          "<!-- bot: claude-docs-review -->\nClaude Code is working…",
+        actionFailed: true,
+        executionDetails: { duration_ms: 30000 },
+      };
+
+      const result = updateCommentBody(input);
+      expect(result).toContain("<!-- bot: claude-docs-review -->");
+      expect(result).toContain("**Claude encountered an error after 30s**");
+    });
+
+    it("preserves sticky header with branch and PR links", () => {
+      const input = {
+        ...baseInput,
+        currentBody:
+          "<!-- bot: claude-docs-review -->\nClaude Code is working…\n\n### Todo List:\n- [x] Done",
+        branchName: "feature-branch",
+        prLink: "\n[Create a PR](https://github.com/owner/repo/pr-url)",
+        triggerUsername: "testuser",
+      };
+
+      const result = updateCommentBody(input);
+      expect(result).toContain("<!-- bot: claude-docs-review -->");
+      expect(result).toContain("`feature-branch`");
+      expect(result).toContain("Create PR ➔");
+      expect(result).toContain("### Todo List:");
+    });
+  });
 });
