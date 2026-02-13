@@ -1,6 +1,8 @@
-import { describe, expect, it, jest } from "bun:test";
+import { describe, expect, it, jest, test } from "bun:test";
 import {
   extractTriggerTimestamp,
+  extractOriginalTitle,
+  extractOriginalBody,
   fetchGitHubData,
   filterCommentsToTriggerTime,
   filterReviewsToTriggerTime,
@@ -9,6 +11,7 @@ import {
 import {
   createMockContext,
   mockIssueCommentContext,
+  mockPullRequestCommentContext,
   mockPullRequestReviewContext,
   mockPullRequestReviewCommentContext,
   mockPullRequestOpenedContext,
@@ -60,6 +63,96 @@ describe("extractTriggerTimestamp", () => {
     });
     const timestamp = extractTriggerTimestamp(context);
     expect(timestamp).toBeUndefined();
+  });
+});
+
+describe("extractOriginalTitle", () => {
+  it("should extract title from IssueCommentEvent on PR", () => {
+    const title = extractOriginalTitle(mockPullRequestCommentContext);
+    expect(title).toBe("Fix: Memory leak in user service");
+  });
+
+  it("should extract title from PullRequestReviewEvent", () => {
+    const title = extractOriginalTitle(mockPullRequestReviewContext);
+    expect(title).toBe("Refactor: Improve error handling in API layer");
+  });
+
+  it("should extract title from PullRequestReviewCommentEvent", () => {
+    const title = extractOriginalTitle(mockPullRequestReviewCommentContext);
+    expect(title).toBe("Performance: Optimize search algorithm");
+  });
+
+  it("should extract title from pull_request event", () => {
+    const title = extractOriginalTitle(mockPullRequestOpenedContext);
+    expect(title).toBe("Feature: Add user authentication");
+  });
+
+  it("should extract title from issues event", () => {
+    const title = extractOriginalTitle(mockIssueOpenedContext);
+    expect(title).toBe("Bug: Application crashes on startup");
+  });
+
+  it("should return undefined for event without title", () => {
+    const context = createMockContext({
+      eventName: "issue_comment",
+      payload: {
+        comment: {
+          id: 123,
+          body: "test",
+        },
+      } as any,
+    });
+    const title = extractOriginalTitle(context);
+    expect(title).toBeUndefined();
+  });
+});
+
+describe("extractOriginalBody", () => {
+  it("should extract body from IssueCommentEvent on PR", () => {
+    const body = extractOriginalBody(mockPullRequestCommentContext);
+    expect(body).toBe("This PR fixes the memory leak issue reported in #788");
+  });
+
+  it("should extract body from PullRequestReviewEvent", () => {
+    const body = extractOriginalBody(mockPullRequestReviewContext);
+    expect(body).toBe(
+      "This PR improves error handling across all API endpoints",
+    );
+  });
+
+  it("should extract body from PullRequestReviewCommentEvent", () => {
+    const body = extractOriginalBody(mockPullRequestReviewCommentContext);
+    expect(body).toBe(
+      "This PR optimizes the search algorithm for better performance",
+    );
+  });
+
+  it("should extract body from pull_request event", () => {
+    const body = extractOriginalBody(mockPullRequestOpenedContext);
+    expect(body).toBe(
+      "## Summary\n\nThis PR adds JWT-based authentication to the API.\n\n## Changes\n\n- Added auth middleware\n- Added login endpoint\n- Added JWT token generation\n\n/claude please review the security aspects",
+    );
+  });
+
+  it("should extract body from issues event", () => {
+    const body = extractOriginalBody(mockIssueOpenedContext);
+    expect(body).toBe(
+      "## Description\n\nThe application crashes immediately after launching.\n\n## Steps to reproduce\n\n1. Install the app\n2. Launch it\n3. See crash\n\n/claude please help me fix this",
+    );
+  });
+
+  it("should return undefined for event without body", () => {
+    const context = createMockContext({
+      eventName: "issue_comment",
+      payload: {
+        comment: {
+          id: 123,
+          body: "test",
+        },
+      } as any,
+    });
+    const body = extractOriginalBody(context);
+    expect(body).toBeUndefined();
   });
 });
 
@@ -944,5 +1037,394 @@ describe("fetchGitHubData integration with time filtering", () => {
       key.includes("pr_body"),
     );
     expect(hasPrBodyInMap).toBe(false);
+  });
+
+  it("should use originalTitle when provided instead of fetched title", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            number: 123,
+            title: "Fetched Title From GraphQL",
+            body: "PR body",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            additions: 10,
+            deletions: 5,
+            state: "OPEN",
+            commits: { totalCount: 1, nodes: [] },
+            files: { nodes: [] },
+            comments: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: true,
+      triggerUsername: "trigger-user",
+      originalTitle: "Original Title From Webhook",
+    });
+
+    expect(result.contextData.title).toBe("Original Title From Webhook");
+  });
+
+  it("should use fetched title when originalTitle is not provided", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            number: 123,
+            title: "Fetched Title From GraphQL",
+            body: "PR body",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            additions: 10,
+            deletions: 5,
+            state: "OPEN",
+            commits: { totalCount: 1, nodes: [] },
+            files: { nodes: [] },
+            comments: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: true,
+      triggerUsername: "trigger-user",
+    });
+
+    expect(result.contextData.title).toBe("Fetched Title From GraphQL");
+  });
+
+  it("should use original title from webhook even if title was edited after trigger", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            number: 123,
+            title: "Edited Title (from GraphQL)",
+            body: "PR body",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            lastEditedAt: "2024-01-15T12:30:00Z", // Edited after trigger
+            additions: 10,
+            deletions: 5,
+            state: "OPEN",
+            commits: { totalCount: 1, nodes: [] },
+            files: { nodes: [] },
+            comments: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: true,
+      triggerUsername: "trigger-user",
+      triggerTime: "2024-01-15T12:00:00Z",
+      originalTitle: "Original Title (from webhook at trigger time)",
+    });
+
+    expect(result.contextData.title).toBe(
+      "Original Title (from webhook at trigger time)",
+    );
+  });
+
+  it("should use originalBody when provided instead of fetched body", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            number: 123,
+            title: "Test PR",
+            body: "Malicious body injected after trigger",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            additions: 10,
+            deletions: 5,
+            state: "OPEN",
+            commits: { totalCount: 1, nodes: [] },
+            files: { nodes: [] },
+            comments: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: true,
+      triggerUsername: "trigger-user",
+      originalBody: "Original safe body from webhook",
+    });
+
+    expect(result.contextData.body).toBe("Original safe body from webhook");
+  });
+
+  it("should use fetched body when originalBody is not provided", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            number: 123,
+            title: "Test PR",
+            body: "Fetched body from GraphQL",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            additions: 10,
+            deletions: 5,
+            state: "OPEN",
+            commits: { totalCount: 1, nodes: [] },
+            files: { nodes: [] },
+            comments: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: true,
+      triggerUsername: "trigger-user",
+    });
+
+    expect(result.contextData.body).toBe("Fetched body from GraphQL");
+  });
+
+  it("should use original body from webhook even if body was edited after trigger (TOCTOU prevention)", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            number: 123,
+            title: "Test PR",
+            body: "Malicious body (edited after trigger via GraphQL)",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            lastEditedAt: "2024-01-15T12:30:00Z", // Edited after trigger
+            additions: 10,
+            deletions: 5,
+            state: "OPEN",
+            commits: { totalCount: 1, nodes: [] },
+            files: { nodes: [] },
+            comments: { nodes: [] },
+            reviews: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: true,
+      triggerUsername: "trigger-user",
+      triggerTime: "2024-01-15T12:00:00Z",
+      originalBody: "Original safe body (from webhook at trigger time)",
+    });
+
+    // Body should be from webhook, not the malicious GraphQL-fetched version
+    expect(result.contextData.body).toBe(
+      "Original safe body (from webhook at trigger time)",
+    );
+  });
+
+  it("should handle null originalBody by setting body to empty string", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          issue: {
+            number: 123,
+            title: "Test Issue",
+            body: "Some body from GraphQL",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            state: "OPEN",
+            labels: { nodes: [] },
+            comments: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: false,
+      triggerUsername: "trigger-user",
+      originalBody: null,
+    });
+
+    // null originalBody means the issue had no body at trigger time
+    expect(result.contextData.body).toBe("");
+  });
+
+  it("should use null originalBody over malicious GraphQL body edited after trigger", async () => {
+    const mockOctokits = {
+      graphql: jest.fn().mockResolvedValue({
+        repository: {
+          issue: {
+            number: 123,
+            title: "Test Issue",
+            body: "Malicious body added after trigger",
+            author: { login: "author" },
+            createdAt: "2024-01-15T10:00:00Z",
+            lastEditedAt: "2024-01-15T12:30:00Z", // Edited after trigger
+            state: "OPEN",
+            labels: { nodes: [] },
+            comments: { nodes: [] },
+          },
+        },
+        user: { login: "trigger-user" },
+      }),
+      rest: jest.fn() as any,
+    };
+
+    const result = await fetchGitHubData({
+      octokits: mockOctokits as any,
+      repository: "test-owner/test-repo",
+      prNumber: "123",
+      isPR: false,
+      triggerUsername: "trigger-user",
+      triggerTime: "2024-01-15T12:00:00Z",
+      originalBody: null,
+    });
+
+    // Webhook says no body at trigger time — attacker-added GraphQL body must not be used
+    expect(result.contextData.body).toBe("");
+  });
+});
+
+describe("filterCommentsByActor", () => {
+  test("filters out excluded actors", () => {
+    const comments = [
+      { author: { login: "user1" }, body: "comment1" },
+      { author: { login: "bot[bot]" }, body: "comment2" },
+      { author: { login: "user2" }, body: "comment3" },
+    ];
+
+    const { filterCommentsByActor } = require("../src/github/data/fetcher");
+    const filtered = filterCommentsByActor(comments, "", "*[bot]");
+    expect(filtered).toHaveLength(2);
+    expect(filtered.map((c: any) => c.author.login)).toEqual([
+      "user1",
+      "user2",
+    ]);
+  });
+
+  test("includes only specified actors", () => {
+    const comments = [
+      { author: { login: "user1" }, body: "comment1" },
+      { author: { login: "user2" }, body: "comment2" },
+      { author: { login: "user3" }, body: "comment3" },
+    ];
+
+    const { filterCommentsByActor } = require("../src/github/data/fetcher");
+    const filtered = filterCommentsByActor(comments, "user1,user2", "");
+    expect(filtered).toHaveLength(2);
+    expect(filtered.map((c: any) => c.author.login)).toEqual([
+      "user1",
+      "user2",
+    ]);
+  });
+
+  test("returns all when no filters", () => {
+    const comments = [
+      { author: { login: "user1" }, body: "comment1" },
+      { author: { login: "user2" }, body: "comment2" },
+    ];
+
+    const { filterCommentsByActor } = require("../src/github/data/fetcher");
+    const filtered = filterCommentsByActor(comments, "", "");
+    expect(filtered).toHaveLength(2);
+  });
+
+  test("exclusion takes priority", () => {
+    const comments = [
+      { author: { login: "user1" }, body: "comment1" },
+      { author: { login: "user2" }, body: "comment2" },
+    ];
+
+    const { filterCommentsByActor } = require("../src/github/data/fetcher");
+    const filtered = filterCommentsByActor(comments, "user1,user2", "user1");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].author.login).toBe("user2");
+  });
+
+  test("filters multiple bot types", () => {
+    const comments = [
+      { author: { login: "user1" }, body: "comment1" },
+      { author: { login: "dependabot[bot]" }, body: "comment2" },
+      { author: { login: "renovate[bot]" }, body: "comment3" },
+      { author: { login: "user2" }, body: "comment4" },
+    ];
+
+    const { filterCommentsByActor } = require("../src/github/data/fetcher");
+    const filtered = filterCommentsByActor(comments, "", "*[bot]");
+    expect(filtered).toHaveLength(2);
+    expect(filtered.map((c: any) => c.author.login)).toEqual([
+      "user1",
+      "user2",
+    ]);
+  });
+
+  test("filters specific bot only", () => {
+    const comments = [
+      { author: { login: "dependabot[bot]" }, body: "comment1" },
+      { author: { login: "renovate[bot]" }, body: "comment2" },
+      { author: { login: "user1" }, body: "comment3" },
+    ];
+
+    const { filterCommentsByActor } = require("../src/github/data/fetcher");
+    const filtered = filterCommentsByActor(comments, "", "dependabot[bot]");
+    expect(filtered).toHaveLength(2);
+    expect(filtered.map((c: any) => c.author.login)).toEqual([
+      "renovate[bot]",
+      "user1",
+    ]);
+  });
+
+  test("handles empty comment array", () => {
+    const comments: any[] = [];
+
+    const { filterCommentsByActor } = require("../src/github/data/fetcher");
+    const filtered = filterCommentsByActor(comments, "user1", "");
+    expect(filtered).toHaveLength(0);
   });
 });

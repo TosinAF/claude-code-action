@@ -3,6 +3,8 @@ import type { Octokits } from "../api/client";
 import { ISSUE_QUERY, PR_QUERY, USER_QUERY } from "../api/queries/github";
 import {
   isIssueCommentEvent,
+  isIssuesEvent,
+  isPullRequestEvent,
   isPullRequestReviewEvent,
   isPullRequestReviewCommentEvent,
   type ParsedGitHubContext,
@@ -18,6 +20,10 @@ import type {
 } from "../types";
 import type { CommentWithImages } from "../utils/image-downloader";
 import { downloadCommentImages } from "../utils/image-downloader";
+import {
+  parseActorFilter,
+  shouldIncludeCommentByActor,
+} from "../utils/actor-filter";
 
 /**
  * Extracts the trigger timestamp from the GitHub webhook payload.
@@ -35,6 +41,58 @@ export function extractTriggerTimestamp(
     return context.payload.review.submitted_at || undefined;
   } else if (isPullRequestReviewCommentEvent(context)) {
     return context.payload.comment.created_at || undefined;
+  }
+
+  return undefined;
+}
+
+/**
+ * Extracts the original title from the GitHub webhook payload.
+ * This is the title as it existed when the trigger event occurred.
+ *
+ * @param context - Parsed GitHub context from webhook
+ * @returns The original title string or undefined if not available
+ */
+export function extractOriginalTitle(
+  context: ParsedGitHubContext,
+): string | undefined {
+  if (isIssueCommentEvent(context)) {
+    return context.payload.issue?.title;
+  } else if (isPullRequestEvent(context)) {
+    return context.payload.pull_request?.title;
+  } else if (isPullRequestReviewEvent(context)) {
+    return context.payload.pull_request?.title;
+  } else if (isPullRequestReviewCommentEvent(context)) {
+    return context.payload.pull_request?.title;
+  } else if (isIssuesEvent(context)) {
+    return context.payload.issue?.title;
+  }
+
+  return undefined;
+}
+
+/**
+ * Extracts the original body from the GitHub webhook payload.
+ * This is the body as it existed when the trigger event occurred,
+ * preventing TOCTOU attacks where an attacker edits the body after
+ * the trigger but before the action reads it.
+ *
+ * @param context - Parsed GitHub context from webhook
+ * @returns The original body string, null (no body), or undefined (not available)
+ */
+export function extractOriginalBody(
+  context: ParsedGitHubContext,
+): string | null | undefined {
+  if (isIssueCommentEvent(context)) {
+    return context.payload.issue?.body;
+  } else if (isPullRequestEvent(context)) {
+    return context.payload.pull_request?.body;
+  } else if (isPullRequestReviewEvent(context)) {
+    return context.payload.pull_request?.body;
+  } else if (isPullRequestReviewCommentEvent(context)) {
+    return context.payload.pull_request?.body;
+  } else if (isIssuesEvent(context)) {
+    return context.payload.issue?.body;
   }
 
   return undefined;
@@ -139,6 +197,35 @@ export function isBodySafeToUse(
   return true;
 }
 
+/**
+ * Filters comments by actor username based on include/exclude patterns
+ * @param comments - Array of comments to filter
+ * @param includeActors - Comma-separated actors to include
+ * @param excludeActors - Comma-separated actors to exclude
+ * @returns Filtered array of comments
+ */
+export function filterCommentsByActor<T extends { author: { login: string } }>(
+  comments: T[],
+  includeActors: string = "",
+  excludeActors: string = "",
+): T[] {
+  const includeParsed = parseActorFilter(includeActors);
+  const excludeParsed = parseActorFilter(excludeActors);
+
+  // No filters = return all
+  if (includeParsed.length === 0 && excludeParsed.length === 0) {
+    return comments;
+  }
+
+  return comments.filter((comment) =>
+    shouldIncludeCommentByActor(
+      comment.author.login,
+      includeParsed,
+      excludeParsed,
+    ),
+  );
+}
+
 type FetchDataParams = {
   octokits: Octokits;
   repository: string;
@@ -146,6 +233,10 @@ type FetchDataParams = {
   isPR: boolean;
   triggerUsername?: string;
   triggerTime?: string;
+  originalTitle?: string;
+  originalBody?: string | null;
+  includeCommentsByActor?: string;
+  excludeCommentsByActor?: string;
 };
 
 export type GitHubFileWithSHA = GitHubFile & {
@@ -169,6 +260,10 @@ export async function fetchGitHubData({
   isPR,
   triggerUsername,
   triggerTime,
+  originalTitle,
+  originalBody,
+  includeCommentsByActor,
+  excludeCommentsByActor,
 }: FetchDataParams): Promise<FetchDataResult> {
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) {
@@ -196,9 +291,13 @@ export async function fetchGitHubData({
         const pullRequest = prResult.repository.pullRequest;
         contextData = pullRequest;
         changedFiles = pullRequest.files.nodes || [];
-        comments = filterCommentsToTriggerTime(
-          pullRequest.comments?.nodes || [],
-          triggerTime,
+        comments = filterCommentsByActor(
+          filterCommentsToTriggerTime(
+            pullRequest.comments?.nodes || [],
+            triggerTime,
+          ),
+          includeCommentsByActor,
+          excludeCommentsByActor,
         );
         reviewData = pullRequest.reviews || [];
 
@@ -219,9 +318,13 @@ export async function fetchGitHubData({
 
       if (issueResult.repository.issue) {
         contextData = issueResult.repository.issue;
-        comments = filterCommentsToTriggerTime(
-          contextData?.comments?.nodes || [],
-          triggerTime,
+        comments = filterCommentsByActor(
+          filterCommentsToTriggerTime(
+            contextData?.comments?.nodes || [],
+            triggerTime,
+          ),
+          includeCommentsByActor,
+          excludeCommentsByActor,
         );
 
         console.log(`Successfully fetched issue #${prNumber} data`);
@@ -289,7 +392,27 @@ export async function fetchGitHubData({
     body: r.body,
   }));
 
-  // Filter review comments to trigger time
+  // Filter review comments to trigger time and by actor
+  if (reviewData && reviewData.nodes) {
+    // Filter reviews by actor
+    reviewData.nodes = filterCommentsByActor(
+      reviewData.nodes,
+      includeCommentsByActor,
+      excludeCommentsByActor,
+    );
+
+    // Also filter inline review comments within each review
+    reviewData.nodes.forEach((review) => {
+      if (review.comments?.nodes) {
+        review.comments.nodes = filterCommentsByActor(
+          review.comments.nodes,
+          includeCommentsByActor,
+          excludeCommentsByActor,
+        );
+      }
+    });
+  }
+
   const allReviewComments =
     reviewData?.nodes?.flatMap((r) => r.comments?.nodes ?? []) ?? [];
   const filteredReviewComments = filterCommentsToTriggerTime(
@@ -305,12 +428,21 @@ export async function fetchGitHubData({
       body: c.body,
     }));
 
-  // Add the main issue/PR body if it has content and wasn't edited after trigger
-  // This prevents a TOCTOU race condition where an attacker could edit the body
-  // between when an authorized user triggered Claude and when Claude processes the request
+  // Use the original body from the webhook payload if provided (TOCTOU protection).
+  // The webhook payload captures the body at event time, before any attacker edits.
+  if (originalBody !== undefined) {
+    contextData.body = originalBody ?? "";
+  }
+
+  // Add the main issue/PR body if it has content and wasn't edited after trigger.
+  // When originalBody is provided, the body is already safe (from webhook payload).
+  // Otherwise, fall back to timestamp-based validation.
   let mainBody: CommentWithImages[] = [];
   if (contextData.body) {
-    if (isBodySafeToUse(contextData, triggerTime)) {
+    if (
+      originalBody !== undefined ||
+      isBodySafeToUse(contextData, triggerTime)
+    ) {
       mainBody = [
         {
           ...(isPR
@@ -352,6 +484,11 @@ export async function fetchGitHubData({
   let triggerDisplayName: string | null | undefined;
   if (triggerUsername) {
     triggerDisplayName = await fetchUserDisplayName(octokits, triggerUsername);
+  }
+
+  // Use the original title from the webhook payload if provided
+  if (originalTitle !== undefined) {
+    contextData.title = originalTitle;
   }
 
   return {

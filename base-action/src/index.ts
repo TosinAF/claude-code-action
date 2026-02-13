@@ -28,7 +28,7 @@ async function run() {
       promptFile: process.env.INPUT_PROMPT_FILE || "",
     });
 
-    await runClaude(promptConfig.path, {
+    const result = await runClaude(promptConfig.path, {
       claudeArgs: process.env.INPUT_CLAUDE_ARGS,
       allowedTools: process.env.INPUT_ALLOWED_TOOLS,
       disallowedTools: process.env.INPUT_DISALLOWED_TOOLS,
@@ -36,13 +36,24 @@ async function run() {
       mcpConfig: process.env.INPUT_MCP_CONFIG,
       systemPrompt: process.env.INPUT_SYSTEM_PROMPT,
       appendSystemPrompt: process.env.INPUT_APPEND_SYSTEM_PROMPT,
-      claudeEnv: process.env.INPUT_CLAUDE_ENV,
       fallbackModel: process.env.INPUT_FALLBACK_MODEL,
       model: process.env.ANTHROPIC_MODEL,
       pathToClaudeCodeExecutable:
         process.env.INPUT_PATH_TO_CLAUDE_CODE_EXECUTABLE,
       showFullOutput: process.env.INPUT_SHOW_FULL_OUTPUT,
     });
+
+    // Set outputs for the standalone base-action
+    core.setOutput("conclusion", result.conclusion);
+    if (result.executionFile) {
+      core.setOutput("execution_file", result.executionFile);
+    }
+    if (result.sessionId) {
+      core.setOutput("session_id", result.sessionId);
+    }
+    if (result.structuredOutput) {
+      core.setOutput("structured_output", result.structuredOutput);
+    }
   } catch (error) {
     core.setFailed(`Action failed with error: ${error}`);
     core.setOutput("conclusion", "failure");
